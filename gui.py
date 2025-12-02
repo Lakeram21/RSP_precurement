@@ -201,3 +201,12 @@ def main(page: ft.Page):
 
 
 ft.app(target=main)
+# import traceback
+
+# if __name__ == "__main__":
+#     try:
+#         ft.app(target=main)
+#     except Exception as e:
+#         print("ERROR:", e)
+#         traceback.print_exc()
+#         input("Press Enter to exit...")
