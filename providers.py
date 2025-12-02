@@ -15,6 +15,30 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
+import os
+import platform
+import shutil
+
+def get_chrome_path():
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    elif system == "Windows":
+        possible_paths = [
+            os.path.join(os.environ.get("PROGRAMFILES(X86)",""), "Google\\Chrome\\Application\\chrome.exe"),
+            os.path.join(os.environ.get("PROGRAMFILES",""), "Google\\Chrome\\Application\\chrome.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA",""), "Google\\Chrome\\Application\\chrome.exe"),
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+        # fallback to PATH
+        return shutil.which("chrome.exe")
+    else:  # Linux
+        return shutil.which("google-chrome") or shutil.which("chromium-browser")
+
+chrome_path = get_chrome_path()
+
 
 async def get_rs_session(page) -> requests.Session:
     """
@@ -85,6 +109,7 @@ async def get_or_create_browser(browser=None):
     new_browser = await uc.start(
         headless=False,
         no_sandbox=True,
+        executable_path=chrome_path,
         user_data_dir="/tmp/chrome_profile",
         browser_args=[
         "--no-sandbox",
