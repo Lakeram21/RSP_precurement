@@ -10,19 +10,80 @@ from providers import (
     scrape_radwell,
 )
 
+import nodriver as uc
+import os
+import platform
+import shutil
 
-# -----------------------------
-# INSERT ROW FUNCTION WITH RESCRAPE
-# -----------------------------
+
+# ======================================================
+#   GLOBAL BROWSER INSTANCE
+# ======================================================
+GLOBAL_BROWSER = None
+
+
+def get_chrome_path():
+    system = platform.system()
+    if system == "Darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    elif system == "Windows":
+        possible_paths = [
+            os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Google\\Chrome\\Application\\chrome.exe"),
+            os.path.join(os.environ.get("PROGRAMFILES", ""), "Google\\Chrome\\Application\\chrome.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google\\Chrome\\Application\\chrome.exe"),
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+        return shutil.which("chrome.exe")
+    else:
+        return shutil.which("google-chrome") or shutil.which("chromium-browser")
+
+
+chrome_path = get_chrome_path()
+
+
+# ======================================================
+#   ALWAYS RETURN SAME BROWSER INSTANCE
+# ======================================================
+async def get_or_create_browser():
+    global GLOBAL_BROWSER
+
+    if GLOBAL_BROWSER:
+        return GLOBAL_BROWSER
+
+    GLOBAL_BROWSER = await uc.start(
+        headless=False,
+        no_sandbox=True,
+        executable_path=chrome_path,
+        user_data_dir="/tmp/chrome_profile",
+        browser_args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-blink-features=AutomationControlled",
+        ],
+    )
+
+    return GLOBAL_BROWSER
+
+
+# ======================================================
+#   INSERT ROW FUNCTION WITH RESCRAPE
+# ======================================================
 def insert_row_fn(table, result_list, header, manufacturer, mpn, page):
     if result_list:
         table.rows.append(
             ft.DataRow(
-                cells=[ft.DataCell(ft.Text(header, weight="bold"))] + [ft.DataCell(ft.Text(""))] * 8
+                cells=[ft.DataCell(ft.Text(header, weight="bold"))]
+                + [ft.DataCell(ft.Text(""))] * 8
             )
         )
 
     for r in result_list:
+
         def make_rescrape_button(r):
             async def perform_rescrape(e):
                 provider_map = {
@@ -33,17 +94,23 @@ def insert_row_fn(table, result_list, header, manufacturer, mpn, page):
                     "eBay": scrape_ebay,
                     "Radwell": scrape_radwell,
                 }
+
+                browser = await get_or_create_browser()
                 scraper = provider_map[r["__provider"]]
 
-                if r["__provider"] in ["Galco"]:
-                    new_res = await scraper(mpn, manufacturer)
+                if r["__provider"] == "Galco":
+                    new_res = await scraper(mpn, manufacturer, browser=browser)
                 else:
-                    new_res = await scraper(mpn)
+                    new_res = await scraper(mpn, browser=browser)
 
                 if new_res:
-                    new_res = new_res[0].dict() if isinstance(new_res[0], ProviderResult) else new_res[0]
+                    new_res = (
+                        new_res[0].dict()
+                        if isinstance(new_res[0], ProviderResult)
+                        else new_res[0]
+                    )
 
-                    # Replace row values
+                    # Update row
                     e.control.parent.cells[3].content.value = str(new_res.get("stock", ""))
                     e.control.parent.cells[4].content.value = str(new_res.get("price", ""))
                     e.control.parent.cells[5].content.url = new_res.get("url", "")
@@ -70,15 +137,18 @@ def insert_row_fn(table, result_list, header, manufacturer, mpn, page):
         )
 
 
-# -----------------------------
-# RUN SCRAPERS ASYNC
-# -----------------------------
+# ======================================================
+#   RUN SCRAPERS USING ONE SHARED BROWSER
+# ======================================================
 async def run_scrapers(mpn, manufacturer, page, table, status_text, enabled_providers):
     status_text.value = f"🔍 Searching for '{mpn}' by '{manufacturer}'..."
     page.update()
 
     table.rows.clear()
     all_results = []
+
+    # Get shared browser
+    browser = await get_or_create_browser()
 
     scrapers = {
         "Digi-Key": (scrape_digikey, False),
@@ -97,35 +167,36 @@ async def run_scrapers(mpn, manufacturer, page, table, status_text, enabled_prov
 
         try:
             if needs_brand:
-                results = await scraper(mpn, manufacturer)
+                results = await scraper(mpn, manufacturer, browser=browser)
             else:
-                results = await scraper(mpn)
+                results = await scraper(mpn, browser=browser)
+                print(f"[INFO] Scraped {results} results from {name} for {mpn}")
 
-            if not results:
-                continue
-
-            for r in results:
-                d = r.dict() if isinstance(r, ProviderResult) else r
-                d["__provider"] = name
-                all_results.append(d)
+            if results:
+                for r in results:
+                    d = r.dict() if isinstance(r, ProviderResult) else r
+                    d["__provider"] = name
+                    all_results.append(d)
 
         except Exception as e:
             status_text.value = f"❌ Error scraping {name}: {e}"
             page.update()
 
+    # Organize results
     exact = [r for r in all_results if r.get("exact_match")]
-    not_exact = [r for r in all_results if not r.get("exact_match")]
+    non_exact = [r for r in all_results if not r.get("exact_match")]
 
     insert_row_fn(table, exact, "EXACT MATCHES", manufacturer, mpn, page)
-    insert_row_fn(table, not_exact, "ALTERNATIVES / NOT EXACT", manufacturer, mpn, page)
+    insert_row_fn(table, non_exact, "ALTERNATIVES / NOT EXACT", manufacturer, mpn, page)
 
     status_text.value = "✅ Done!"
     page.update()
+    # browser.stop()
 
 
-# -----------------------------
-# MAIN UI
-# -----------------------------
+# ======================================================
+#   UI
+# ======================================================
 def main(page: ft.Page):
     page.title = "RSP Supply Procurement Scraper"
     page.window_width = 1200
@@ -148,8 +219,7 @@ def main(page: ft.Page):
             ft.DataColumn(ft.Text("Scraped SKU")),
             ft.DataColumn(ft.Text("Action")),
         ],
-        rows=[],
-        expand=False,
+        rows=[]
     )
 
     scrollable_results = ft.ListView(
@@ -159,7 +229,6 @@ def main(page: ft.Page):
         auto_scroll=False,
     )
 
-    # Provider selection checkboxes
     select_all = ft.Checkbox(label="Select All", value=True)
     provider_checks = {
         "Digi-Key": ft.Checkbox(label="Digi-Key", value=True),
@@ -201,12 +270,3 @@ def main(page: ft.Page):
 
 
 ft.app(target=main)
-# import traceback
-
-# if __name__ == "__main__":
-#     try:
-#         ft.app(target=main)
-#     except Exception as e:
-#         print("ERROR:", e)
-#         traceback.print_exc()
-#         input("Press Enter to exit...")

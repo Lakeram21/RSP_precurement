@@ -96,8 +96,26 @@ def parse_int(text: Optional[str]) -> int:
         return 0
 
 
-async def get_soup(page) -> BeautifulSoup:
-    """Return BeautifulSoup for current page HTML."""
+async def get_soup(page, timeout: int = 15000, scroll_attempts: int = 3) -> BeautifulSoup:
+    """
+    Return BeautifulSoup for the current page HTML after ensuring it is fully loaded.
+    
+    This function:
+      1. Waits for network idle (no active requests).
+      2. Scrolls the page multiple times to trigger lazy-loaded content.
+      3. Returns BeautifulSoup of the final page HTML.
+    """
+    try:
+        # Wait until network is idle (all resources loaded)
+        await page.wait_for_navigation(wait_until="networkidle", timeout=timeout)
+    except Exception:
+        pass  # some pages may not trigger navigation, ignore
+
+    # Scroll to bottom multiple times to load lazy content
+    for _ in range(scroll_attempts):
+        await page.evaluate("window.scrollBy(0, window.innerHeight);")
+        await asyncio.sleep(0.1)
+
     html = await page.get_content()
     return BeautifulSoup(html, "html.parser")
 
@@ -127,6 +145,44 @@ async def get_or_create_browser(browser=None):
 # ────────────────────────────────
 # Digi-Key Scraper
 # ────────────────────────────────
+async def wait_for_digikey_page(page, mpn, timeout=20):
+    """
+    Waits for Digi-Key product or search page to load, 
+    bypassing the occasional 'access blocked' interstitial.
+    Returns BeautifulSoup of the loaded page.
+    """
+    interval = 1
+    elapsed = 0
+    while elapsed < timeout:
+        html = await page.get_content()
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Check for blocker
+        blocker = soup.find("div", class_=re.compile("blocked|captcha|access"))
+        if blocker:
+            print(f"[Digikey] Blocker detected, waiting...")
+            await asyncio.sleep(3)  # wait a few seconds
+            elapsed += 3
+            continue
+
+        # Check for main product container (product detail page)
+        product_header = soup.find("div", {"data-evg": "price-procurement-wrapper"})
+        if product_header:
+            return soup
+
+        # Check for list results page
+        rows = soup.select("div[data-testid='sb-content-container'] tbody tr")
+        if rows:
+            return soup
+
+        # Wait a bit before checking again
+        await asyncio.sleep(interval)
+        elapsed += interval
+
+    # Timeout reached, return whatever is loaded
+    return soup
+
+
 async def parse_digikey_product_page(soup, mpn, url):
     results = []
 
@@ -172,11 +228,11 @@ async def parse_digikey_product_page(soup, mpn, url):
     return results
 
 
-async def scrape_digikey(mpn: str, browser=None) -> List[ProviderResult]:
+async def scrape_digikey(mpn: str, browser) -> List[ProviderResult]:
     base_url = "https://www.digikey.com"
     search_url = f"{base_url}/en/products/result?keywords={mpn}"
 
-    browser, own_browser = await get_or_create_browser(browser)
+    # browser, own_browser = await get_or_create_browser(browser)
     results = []
 
     try:
@@ -184,13 +240,19 @@ async def scrape_digikey(mpn: str, browser=None) -> List[ProviderResult]:
         # LOAD SEARCH PAGE
         # ---------------------------
         page = await browser.get(search_url)
-        await asyncio.sleep(15)
+       
         soup = await get_soup(page)
+        blocker = soup.find("div", class_=re.compile("blocked|captcha|access"))
+        if blocker:
+            print(f"[Digikey] Blocker detected, waiting...")
+            await asyncio.sleep(2)
+        # soup = await wait_for_digikey_page(page, mpn, timeout=20)
 
         # ---------------------------
         # CASE 1: DIRECT PRODUCT PAGE
         # ---------------------------
         # If we are already on a product page, Digi-Key prints the MPN in a data attribute.
+        # Check if we are on a detail page
         product_header = soup.find("div", {"data-evg": "price-procurement-wrapper"})
         if product_header:
             return await parse_digikey_product_page(soup, mpn, search_url)
@@ -204,7 +266,7 @@ async def scrape_digikey(mpn: str, browser=None) -> List[ProviderResult]:
             if link:
                 url = base_url + link["href"]
                 page = await browser.get(url)
-                await asyncio.sleep(15)
+                await page.wait_for("div[data-evg='price-procurement-wrapper']", timeout=10000)
                 soup = await get_soup(page)
                 return await parse_digikey_product_page(soup, mpn, url)
 
@@ -235,38 +297,51 @@ async def scrape_digikey(mpn: str, browser=None) -> List[ProviderResult]:
         # ---------------------------
         # NOTHING FOUND
         # ---------------------------
-        results.append(
-            ProviderResult(
-                supplier="DigiKey",
-                part_number=mpn,
-                manufacturer="N/A",
-                stock=0,
-                price=0.0,
-                url="Not Found",
-                exact_match=False,
+        # Check if no results message is present for classname with tet inside: -noResultsText
+        no_results = soup.find(class_=re.compile("noResultsText"))
+        if no_results:
+            results.append(
+                ProviderResult(
+                    supplier="DigiKey",
+                    part_number=mpn,
+                    manufacturer="N/A",
+                    stock=0,
+                    price=0.0,
+                    url="Not Found",
+                    exact_match=False,
+                )
             )
-        )
         return results
 
     except Exception as e:
         print(f"[ERROR] DigiKey {mpn}: {e}")
         traceback.print_exc()
-        return []
+        results.append(
+                ProviderResult(
+                    supplier="DigiKey",
+                    part_number=mpn,
+                    manufacturer="N/A",
+                    stock=0,
+                    price=0.0,
+                    url="Not Found",
+                    exact_match=False,
+                )
+            )
+        return results
 
     finally:
-        if own_browser:
-            browser.stop()
+        pass
 
 
 
 # ────────────────────────────────
 # Galco Scraper
 # ────────────────────────────────
-async def scrape_galco(mpn: str, brand: str, browser=None, _retry=False) -> List[ProviderResult]:
+async def scrape_galco(mpn: str, brand: str, browser, _retry=False) -> List[ProviderResult]:
     base_url = "https://www.galco.com"
     search_url = f"{base_url}/catalogsearch/result/?q={mpn}"
 
-    browser, own_browser = await get_or_create_browser(browser)
+    # browser, own_browser = await get_or_create_browser(browser)
     results = []
 
     try:
@@ -274,7 +349,8 @@ async def scrape_galco(mpn: str, brand: str, browser=None, _retry=False) -> List
         # LOAD SEARCH PAGE
         # ---------------------------
         page = await browser.get(search_url)
-        await asyncio.sleep(15)
+        await asyncio.sleep(2) 
+        await page.wait_for("nav.navigation", timeout=10000)
         soup = await get_soup(page)
 
         # ---------------------------
@@ -307,8 +383,7 @@ async def scrape_galco(mpn: str, brand: str, browser=None, _retry=False) -> List
         
         if product_cards == [] and  not _retry:
             print(f"[Galco] No results for {mpn}, RETRYING...")
-            browser.stop()
-            return await scrape_galco(mpn, brand, browser=None, _retry=True)
+            return await scrape_galco(mpn, brand, browser, _retry=True)
 
         if not product_cards:
             # No results even after checking — return empty set
@@ -369,8 +444,7 @@ async def scrape_galco(mpn: str, brand: str, browser=None, _retry=False) -> List
         return []
 
     finally:
-        if own_browser:
-            browser.stop()
+        pass
 
 async def parse_galco_product_page(soup, mpn, brand, url):
     results = []
@@ -592,8 +666,7 @@ async def scrape_mouser(mpn: str, browser=None, wait_per_try: int = 5) -> List[P
         # LOAD SEARCH PAGE
         # ---------------------------
         page = await browser.get(search_url)
-        await asyncio.sleep(wait_per_try)
-        await asyncio.sleep(15)
+        await page.wait_for("div#pdpPricingAvailability, tr[data-partnumber], div.no-results-heading", timeout=10000)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
         soup = await get_soup(page)
 
@@ -611,8 +684,7 @@ async def scrape_mouser(mpn: str, browser=None, wait_per_try: int = 5) -> List[P
         if not rows:
             # Retry once
             await page.reload()
-            await asyncio.sleep(wait_per_try)
-            await asyncio.sleep(15)
+            await page.wait_for("div#pdpPricingAvailability, tr[data-partnumber], div.no-results-heading", timeout=10000)
             soup = await get_soup(page)
             rows = soup.find_all("tr", attrs={"data-partnumber": True})
 
@@ -651,7 +723,7 @@ async def scrape_mouser(mpn: str, browser=None, wait_per_try: int = 5) -> List[P
             if not product_url.startswith("http"):
                 product_url = "https://www.mouser.com" + product_url
             page = await browser.get(product_url)
-            await asyncio.sleep(15)
+            await page.wait_for("div#pdpPricingAvailability, tr[data-partnumber]", timeout=10000)
             product_soup = await get_soup(page)
             return await parse_mouser_product_page(product_soup, mpn, product_url)
         
@@ -759,7 +831,7 @@ def extract_sku_tokens(title: str):
     return re.findall(r"[A-Za-z0-9]+(?:[-/][A-Za-z0-9]+)*", title)
 
 
-async def scrape_ebay(mpn: str) -> List[ProviderResult]:
+async def scrape_ebay(mpn: str, browser =None) -> List[ProviderResult]:
     print(f"🔍 Searching eBay for {mpn}...")
 
     token = await ebay_get_access_token()
@@ -811,7 +883,7 @@ async def scrape_ebay(mpn: str) -> List[ProviderResult]:
 
         # seller feedback ≥ 98%
         feedback = float(item.get("seller", {}).get("feedbackPercentage", 0))
-        if feedback < 98:
+        if feedback < 90:
             continue
 
         # returns accepted
@@ -852,8 +924,8 @@ async def scrape_radwell(mpn: str, browser=None, wait_per_try: int = 5) -> List[
         # LOAD SEARCH PAGE
         # ---------------------------
         page = await browser.get(search_url)
-        await asyncio.sleep(wait_per_try)
-        await asyncio.sleep(15)
+        await asyncio.sleep(2)
+        # await page.wait_for("div#search-grid", timeout=10000)
         soup = await get_soup(page)
 
         # ---------------------------
@@ -923,7 +995,8 @@ async def scrape_radwell(mpn: str, browser=None, wait_per_try: int = 5) -> List[
 
             # Go to product page
             page = await browser.get(product_url)
-            await asyncio.sleep(15)
+            await page.wait(2)
+            # await page.wait_for("div.breadcrumb-item", timeout=10000)
             product_soup = await get_soup(page)
 
             return await parse_radwell_product_page(product_soup, scraped_sku, product_url)
