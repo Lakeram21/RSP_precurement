@@ -199,6 +199,7 @@ async def parse_digikey_product_page(soup, mpn, url):
             exact_match=False
         )]
     manufacturer = soup.find("tr", {"data-testid": "overview-manufacturer"})
+    manufacturer_partnumber = soup.find("td", {"data-testid": "mfr-number"})
     manufacturer_name = manufacturer.text.strip() if manufacturer else None
     for block in blocks:
         stock_span = block.find("span", string=lambda t: t and "In-Stock" in t)
@@ -222,6 +223,7 @@ async def parse_digikey_product_page(soup, mpn, url):
                 price=price,
                 url=url,
                 exact_match=True,
+                scraped_sku=manufacturer_partnumber.text.strip() if manufacturer_partnumber else None
             )
         )
 
@@ -448,6 +450,9 @@ async def scrape_galco(mpn: str, brand: str, browser, _retry=False) -> List[Prov
 
 async def parse_galco_product_page(soup, mpn, brand, url):
     results = []
+    # manufacturer part number
+    # itemprop="MFG Item Number"
+    manufacturer_partnumber_el = soup.find("div", itemprop="MFG Item Number")
 
     # Stock
     stock_el = soup.select_one("span.stock-number")
@@ -465,7 +470,8 @@ async def parse_galco_product_page(soup, mpn, brand, url):
             stock=stock,
             price=price,
             url=url,
-            exact_match=True
+            exact_match=True,
+            scraped_sku=manufacturer_partnumber_el.text.strip() if manufacturer_partnumber_el else None
         )
     ]
 
@@ -543,7 +549,7 @@ def title_matches_mpn(title: str, mpn: str) -> bool:
 # -----------------------------
 # RS scraper using dynamic session
 # -----------------------------
-async def scrape_rs(mpn: str, page_size: int = 20, max_pages: int = 3) -> List[ProviderResult]:
+async def scrape_rs(mpn: str, browser=None,page_size: int = 20, max_pages: int = 3) -> List[ProviderResult]:
     session = await get_rs_session_with_datadome(existing_cookies, headers)
     results: List[ProviderResult] = []
     base_endpoint = "https://us.rs-online.com/groupby/search/endpoint"
@@ -791,6 +797,7 @@ async def parse_mouser_product_page(soup, mpn, url):
             price=price,
             url=url,
             exact_match=exact_match,
+            scraped_sku=scraped_sku
         )
     ]
 
@@ -1058,7 +1065,9 @@ async def parse_radwell_product_page(soup, mpn, url):
                 exact_match=True
             )
         ]
-
+    # Manufacturer Part Number is same as MPN for Radwell listings
+    manufacturer_partnumber = soup.find("span", class_="pdp-part-number")
+    
     # Stock
     stock_el = new_option.find("div", class_="option__stock__v2")
     stock_text = stock_el.get_text(strip=True) if stock_el else ""
@@ -1083,6 +1092,7 @@ async def parse_radwell_product_page(soup, mpn, url):
             stock=stock,
             price=price,
             url=url,
-            exact_match=True
+            exact_match=True,
+            scraped_sku=manufacturer_partnumber.text.strip() if manufacturer_partnumber else None
         )
     ]

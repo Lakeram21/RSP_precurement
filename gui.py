@@ -127,11 +127,12 @@ def insert_row_fn(table, result_list, header, manufacturer, mpn, page):
                     row = row.parent
 
                 # Update the cells in that row
+                row.cells[2].content.value = new_res.get("manufacturer", manufacturer)
                 row.cells[3].content.value = str(new_res.get("stock", ""))
                 row.cells[4].content.value = str(new_res.get("price", ""))
                 row.cells[5].content.url = new_res.get("url", "")
                 row.cells[6].content.value = "Yes" if new_res.get("exact_match") else "No"
-
+                row.cells[7].content.value = new_res.get("scraped_sku", "")
                 page.update()
 
             return ft.ElevatedButton("🔄 Rescrape", on_click=perform_rescrape)
@@ -215,11 +216,11 @@ async def run_scrapers(mpn, manufacturer, page, table, status_text, enabled_prov
             page.update()
 
     # Organize results
-    exact = [r for r in all_results if r.get("exact_match")]
-    non_exact = [r for r in all_results if not r.get("exact_match")]
+    exact = [r for r in all_results]
+    # non_exact = [r for r in all_results if not r.get("exact_match")]
 
     insert_row_fn(table, exact, "EXACT MATCHES", manufacturer, mpn, page)
-    insert_row_fn(table, non_exact, "ALTERNATIVES / NOT EXACT", manufacturer, mpn, page)
+    # insert_row_fn(table, non_exact, "ALTERNATIVES / NOT EXACT", manufacturer, mpn, page)
 
     status_text.value = "✅ Done!"
     page.update()

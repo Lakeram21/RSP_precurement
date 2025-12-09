@@ -53,19 +53,21 @@ async def get_or_create_browser(browser=None):
 async def main():
     new_browser = await get_or_create_browser()
     # mpn = "10923H19"
-    mpn = "J1210HPL"
+    mpn = "J4858CST"
     results = []
 
     # results_1 = await scrape_galco(mpn, "ABB", new_browser)
     # results_2 = await scrape_digikey(mpn, new_browser)
-    results_3 = await scrape_mouser(mpn, new_browser)
+    # results_3 = await scrape_mouser(mpn, new_browser)
     # results_4 = await scrape_radwell(mpn, new_browser)
     # results_5 = await scrape_ebay(mpn, broswer=new_browser)
+    results_6 = await scrape_rs(mpn)
     # results.append(results_1)
     # results.append(results_2)
-    results.append(results_3)
+    # results.append(results_3)
     # results.append(results_4)
     # results.append(results_5)
+    results.append(results_6)
 
     for r in results:
         print(r)
