@@ -109,16 +109,33 @@ def insert_row_fn(table, result_list, header, manufacturer, mpn, page):
                         if isinstance(new_res[0], ProviderResult)
                         else new_res[0]
                     )
+                # Else placholder provider result
+                else:
+                    new_res = {
+                        "supplier": r.get("supplier", ""),
+                        "part_number": r.get("part_number", ""),
+                        "manufacturer": r.get("manufacturer", ""),
+                        "stock": "N/A - Try Rescraping",
+                        "price": "N/A - Try Rescraping",
+                        "url": "",
+                        "exact_match": False,
+                        "scraped_sku": "",
+                    }
+                    # Find the DataRow that contains the button
+                row = e.control
+                while not isinstance(row, ft.DataRow):
+                    row = row.parent
 
-                    # Update row
-                    e.control.parent.cells[3].content.value = str(new_res.get("stock", ""))
-                    e.control.parent.cells[4].content.value = str(new_res.get("price", ""))
-                    e.control.parent.cells[5].content.url = new_res.get("url", "")
-                    e.control.parent.cells[6].content.value = "Yes" if new_res.get("exact_match") else "No"
+                # Update the cells in that row
+                row.cells[3].content.value = str(new_res.get("stock", ""))
+                row.cells[4].content.value = str(new_res.get("price", ""))
+                row.cells[5].content.url = new_res.get("url", "")
+                row.cells[6].content.value = "Yes" if new_res.get("exact_match") else "No"
 
                 page.update()
 
             return ft.ElevatedButton("🔄 Rescrape", on_click=perform_rescrape)
+
 
         table.rows.append(
             ft.DataRow(
@@ -177,6 +194,21 @@ async def run_scrapers(mpn, manufacturer, page, table, status_text, enabled_prov
                     d = r.dict() if isinstance(r, ProviderResult) else r
                     d["__provider"] = name
                     all_results.append(d)
+            else:
+                # placeholder provider result
+                all_results.append(
+                    {
+                        "supplier": name,
+                        "part_number": "",
+                        "manufacturer": manufacturer,
+                        "stock": "N/A - Try Scraping Again",
+                        "price": "N/A - Try Scraping Again",
+                        "url": "",
+                        "exact_match": False,
+                        "scraped_sku": "",
+                        "__provider": name,
+                    }
+                )
 
         except Exception as e:
             status_text.value = f"❌ Error scraping {name}: {e}"
