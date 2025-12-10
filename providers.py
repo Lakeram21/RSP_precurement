@@ -476,37 +476,57 @@ async def parse_galco_product_page(soup, mpn, brand, url):
     ]
 
 
-async def get_rs_session_with_datadome(existing_cookies: dict, headers: dict) -> requests.Session:
+async def get_rs_session_with_datadome(browser, existing_cookies: dict, headers: dict):
     """
-    Open RS Online in a browser, extract the datadome cookie, 
-    and return a requests.Session with all other existing cookies + datadome.
+    Open RS Online in Nodriver, extract ALL browser cookies including DataDome,
+    and load them into a requests.Session with merged cookies.
     """
-    browser = await uc.start(headless=False)
+    # Launch browser
+    # browser = await uc.start(headless=False)
     page = await browser.get("https://us.rs-online.com")
-    await asyncio.sleep(5)  # wait for cookies to populate
 
-    # Extract cookies from browser
-    time.sleep(5)
+    # Wait for JS to finish setting anti-bot cookies
+    await asyncio.sleep(6)
+
+    # EXTRACT COOKIES (already a list of Cookie objects)
     raw_cookies = await page.send(cdp.storage.get_cookies())
-    datadome_value = None
-    for c in raw_cookies:
-        if c.name.lower() == "datadome":
-            datadome_value = c.value
-            break
-
-    browser.stop()
 
     # Create session
     session = requests.Session()
     session.headers.update(headers)
 
-    # Copy existing cookies, override datadome if found
+    datadome_value = None
+
+    # Add cookies from browser
+    for c in raw_cookies:
+        name = c.name
+        value = c.value
+        domain = getattr(c, "domain", None)
+
+        # Capture DataDome for later override
+        if name.lower() == "datadome":
+            datadome_value = value
+
+        # Try setting with domain first
+        try:
+            session.cookies.set(name, value, domain=domain)
+        except:
+            session.cookies.set(name, value)
+
+    # Add existing cookies (except datadome)
     for name, value in existing_cookies.items():
-        session.cookies.set(name, value)
+        if name.lower() != "datadome":
+            session.cookies.set(name, value)
+
+    # Apply datadome last (most important)
     if datadome_value:
         session.cookies.set("datadome", datadome_value)
 
+    # Optional: keep browser open or close it
+    # await browser.stop()
+
     return session
+
 
 # -----------------------------
 # Example usage
@@ -549,8 +569,8 @@ def title_matches_mpn(title: str, mpn: str) -> bool:
 # -----------------------------
 # RS scraper using dynamic session
 # -----------------------------
-async def scrape_rs(mpn: str, browser=None,page_size: int = 20, max_pages: int = 3) -> List[ProviderResult]:
-    session = await get_rs_session_with_datadome(existing_cookies, headers)
+async def scrape_rs(mpn: str, browser,page_size: int = 20, max_pages: int = 3) -> List[ProviderResult]:
+    session = await get_rs_session_with_datadome(browser,existing_cookies, headers)
     results: List[ProviderResult] = []
     base_endpoint = "https://us.rs-online.com/groupby/search/endpoint"
 
